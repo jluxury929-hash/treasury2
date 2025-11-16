@@ -1,264 +1,154 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+# PRODUCTION TREASURY PT2 - SENDS REAL ETH
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from web3 import Web3
-from eth_account import Account
 import os
 from datetime import datetime
 import logging
 
+app = Flask(__name__)
+CORS(app)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Ultra Treasury", version="4.0.0")
+# Environment variables
+TREASURY_PRIVATE_KEY = os.environ.get('TREASURY_PRIVATE_KEY')
+ALCHEMY_API_KEY = os.environ.get('ALCHEMY_API_KEY')
+PORT = int(os.environ.get('PORT', 3000))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
+# Web3 setup
+ALCHEMY_URL = f'https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}'
+w3 = Web3(Web3.HTTPProvider(ALCHEMY_URL))
 
-TREASURY_KEY = os.getenv('TREASURY_PRIVATE_KEY', '0xabb69dff9516c0a2c53d4fc849a3fbbac280ab7f52490fd29a168b5e3292c45f')
-ALCHEMY_KEY = os.getenv('ALCHEMY_API_KEY', 'j6uyDNnArwlEpG44o93SqZ0JixvE20Tq
-')
-ETH_PRICE = 3450
+# Treasury account
+treasury_account = w3.eth.account.from_key(TREASURY_PRIVATE_KEY)
+treasury_address = treasury_account.address
 
-user_earnings = {}
+logger.info(f'Treasury PT2: {treasury_address}')
 
-web3 = None
-treasury = None
-treasury_addr = None
-
-def init():
-    global web3, treasury, treasury_addr
-    
+@app.route('/', methods=['GET'])
+def health_check():
     try:
-        key = TREASURY_KEY if TREASURY_KEY.startswith('0x') else '0x' + TREASURY_KEY
-        treasury = Account.from_key(key)
-        treasury_addr = treasury.address
+        balance = w3.eth.get_balance(treasury_address)
+        balance_eth = w3.from_wei(balance, 'ether')
+        block_number = w3.eth.block_number
         
-        logger.info(f"Treasury: {treasury_addr}")
-        
-        rpc = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}" if ALCHEMY_KEY else "https://eth-mainnet.public.blastapi.io"
-        web3 = Web3(Web3.HTTPProvider(rpc))
-        
-        if web3.is_connected():
-            bal = web3.from_wei(web3.eth.get_balance(treasury_addr), 'ether')
-            logger.info(f"Balance: {bal} ETH")
-            return True
-        return False
+        return jsonify({
+            'status': 'online',
+            'service': 'Treasury PT2',
+            'version': '2.0',
+            'treasury_address': treasury_address,
+            'treasury_eth_balance': float(balance_eth),
+            'network': 'Ethereum Mainnet',
+            'chain_id': w3.eth.chain_id,
+            'block_number': block_number,
+            'timestamp': datetime.utcnow().isoformat()
+        })
     except Exception as e:
-        logger.error(f"Init: {e}")
-        return False
+        return jsonify({'error': str(e)}), 500
 
-web3_ready = init()
+@app.route('/api/claim/earnings', methods=['POST'])
+def claim_earnings():
+    data = request.json
+    user_wallet = data.get('userWallet')
+    amount_eth = float(data.get('amountETH', 0))
+    amount_usd = data.get('amountUSD', 0)
+    backup_id = data.get('backupId', 'N/A')
+    user_email = data.get('userEmail', 'N/A')
+    source = data.get('source', 'N/A')
 
-class ReceiveEarnings(BaseModel):
-    amountETH: float
-    amountUSD: float = 0
-    source: str = "site"
-    userWallet: str = "not_connected"
+    logger.info('=' * 50)
+    logger.info('WITHDRAWAL REQUEST PT2')
+    logger.info(f'Amount: {amount_eth} ETH USD: {amount_usd}')
+    logger.info(f'To: {user_wallet}')
+    logger.info(f'User: {user_email}')
+    logger.info(f'Backup: {backup_id}')
+    logger.info(f'Source: {source}')
+    logger.info('=' * 50)
 
-class ClaimEarnings(BaseModel):
-    userWallet: str
-    amountETH: float
-
-class Transfer(BaseModel):
-    recipientAddress: str
-    amountETH: float
-
-@app.get("/")
-async def root():
-    bal = None
-    if web3 and treasury_addr:
-        try:
-            bal = float(web3.from_wei(web3.eth.get_balance(treasury_addr), 'ether'))
-        except:
-            pass
-    
-    return {
-        "service": "Ultra Treasury",
-        "version": "4.0.0",
-        "status": "online",
-        "web3_ready": web3_ready,
-        "treasury_address": treasury_addr,
-        "treasury_eth_balance": bal,
-        "network": "Ethereum Mainnet",
-        "chain_id": 1,
-        "demo_mode": False,
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.post("/api/treasury/receive")
-async def receive(req: ReceiveEarnings):
     try:
-        if req.amountETH <= 0:
-            raise HTTPException(400, "Invalid amount")
+        if not w3.is_address(user_wallet):
+            raise ValueError('Invalid wallet address')
         
-        logger.info(f"RECEIVE: {req.amountETH:.6f} ETH from {req.userWallet}")
-        
-        if req.userWallet != "not_connected":
-            user_earnings[req.userWallet] = user_earnings.get(req.userWallet, 0) + req.amountETH
-            logger.info(f"Credits: {user_earnings[req.userWallet]:.6f}")
-        
-        bal = None
-        if web3 and treasury_addr:
-            try:
-                bal = float(web3.from_wei(web3.eth.get_balance(treasury_addr), 'ether'))
-            except:
-                pass
-        
-        return {
-            "success": True,
-            "message": "Earnings tracked",
-            "amount_eth": req.amountETH,
-            "amount_usd": req.amountETH * ETH_PRICE,
-            "user_total_credits": user_earnings.get(req.userWallet, 0) if req.userWallet != "not_connected" else None,
-            "treasury_new_balance_eth": bal,
-            "treasury_new_balance_usd": bal * ETH_PRICE if bal else None,
-            "timestamp": datetime.now().isoformat()
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        raise HTTPException(500, str(e))
+        user_wallet = w3.to_checksum_address(user_wallet)
 
-@app.post("/api/claim/earnings")
-async def claim(req: ClaimEarnings):
-    if not web3_ready or not treasury:
-        raise HTTPException(503, "Not ready")
-    
-    try:
-        if not Web3.is_address(req.userWallet):
-            raise HTTPException(400, "Invalid address")
+        if not amount_eth or amount_eth <= 0 or amount_eth > 10:
+            raise ValueError(f'Invalid amount: {amount_eth} ETH must be 0-10')
+
+        treasury_balance = w3.eth.get_balance(treasury_address)
+        treasury_balance_eth = float(w3.from_wei(treasury_balance, 'ether'))
         
-        user = Web3.to_checksum_address(req.userWallet)
-        credits = user_earnings.get(user, 0)
+        logger.info(f'Treasury balance: {treasury_balance_eth:.8f} ETH')
         
-        if credits < req.amountETH:
-            raise HTTPException(400, f"Need {req.amountETH:.6f}, have {credits:.6f}")
+        if treasury_balance_eth < amount_eth + 0.001:
+            raise ValueError(f'Insufficient treasury: {treasury_balance_eth:.6f} ETH')
+
+        amount_wei = w3.to_wei(amount_eth, 'ether')
         
-        logger.info(f"CLAIM: {req.amountETH:.6f} to {user}")
+        logger.info('Sending transaction...')
         
-        bal = float(web3.from_wei(web3.eth.get_balance(treasury_addr), 'ether'))
+        gas_price = w3.eth.gas_price
         
-        if bal < req.amountETH + 0.002:
-            raise HTTPException(400, f"Low: {bal:.6f}")
-        
-        tx = {
-            'to': user,
-            'value': web3.to_wei(req.amountETH, 'ether'),
+        transaction = {
+            'to': user_wallet,
+            'value': amount_wei,
             'gas': 21000,
-            'gasPrice': int(web3.eth.gas_price * 1.1),
-            'nonce': web3.eth.get_transaction_count(treasury_addr),
-            'chainId': 1
+            'gasPrice': gas_price,
+            'nonce': w3.eth.get_transaction_count(treasury_address),
+            'chainId': w3.eth.chain_id
         }
-        
-        signed = treasury.sign_transaction(tx)
-        tx_hash = web3.eth.send_raw_transaction(signed.rawTransaction)
-        receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        
-        if receipt['status'] == 1:
-            gas = float(web3.from_wei(receipt['gasUsed'] * receipt.get('effectiveGasPrice', web3.eth.gas_price), 'ether'))
-            user_earnings[user] -= req.amountETH
-            
-            logger.info(f"DONE! Block {receipt['blockNumber']}")
-            
-            return {
-                "success": True,
-                "txHash": tx_hash.hex(),
-                "blockNumber": receipt['blockNumber'],
-                "gasUsed": f"{gas:.6f}",
-                "amountSent": req.amountETH,
-                "recipient": user,
-                "etherscanUrl": f"https://etherscan.io/tx/{tx_hash.hex()}",
-                "user_remaining_credits": user_earnings.get(user, 0),
-                "timestamp": datetime.now().isoformat()
-            }
-        raise HTTPException(500, "Failed")
-    except HTTPException:
-        raise
+
+        signed_txn = treasury_account.sign_transaction(transaction)
+        tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+        tx_hash_hex = tx_hash.hex()
+
+        logger.info(f'TX broadcast: {tx_hash_hex}')
+        logger.info('Waiting for confirmation...')
+
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+        logger.info('')
+        logger.info('SUCCESS')
+        logger.info(f'TX: {tx_hash_hex}')
+        logger.info(f'Block: {receipt["blockNumber"]}')
+        logger.info(f'Gas Used: {receipt["gasUsed"]}')
+        logger.info(f'Amount: {amount_eth} ETH')
+        logger.info(f'To: {user_wallet}')
+        logger.info('=' * 50)
+
+        return jsonify({
+            'success': True,
+            'txHash': tx_hash_hex,
+            'blockNumber': receipt['blockNumber'],
+            'gasUsed': receipt['gasUsed'],
+            'amount': amount_eth,
+            'amountUSD': amount_usd,
+            'recipientWallet': user_wallet,
+            'treasuryAddress': treasury_address,
+            'etherscanUrl': f'https://etherscan.io/tx/{tx_hash_hex}',
+            'timestamp': datetime.utcnow().isoformat()
+        })
+
     except Exception as e:
-        logger.error(f"Error: {e}")
-        raise HTTPException(500, str(e))
-
-@app.post("/api/transfer/eth")
-async def transfer(req: Transfer):
-    if not web3_ready or not treasury:
-        raise HTTPException(503, "Not ready")
-    
-    try:
-        to = Web3.to_checksum_address(req.recipientAddress)
-        bal = float(web3.from_wei(web3.eth.get_balance(treasury_addr), 'ether'))
+        logger.error('=' * 50)
+        logger.error('WITHDRAWAL FAILED')
+        logger.error(f'Error: {str(e)}')
+        logger.error('=' * 50)
         
-        if bal < req.amountETH + 0.002:
-            raise HTTPException(400, f"Low: {bal:.6f}")
-        
-        tx = {
-            'to': to,
-            'value': web3.to_wei(req.amountETH, 'ether'),
-            'gas': 21000,
-            'gasPrice': int(web3.eth.gas_price * 1.1),
-            'nonce': web3.eth.get_transaction_count(treasury_addr),
-            'chainId': 1
-        }
-        
-        signed = treasury.sign_transaction(tx)
-        tx_hash = web3.eth.send_raw_transaction(signed.rawTransaction)
-        receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        
-        if receipt['status'] == 1:
-            gas = float(web3.from_wei(receipt['gasUsed'] * receipt.get('effectiveGasPrice', web3.eth.gas_price), 'ether'))
-            
-            return {
-                "success": True,
-                "txHash": tx_hash.hex(),
-                "blockNumber": receipt['blockNumber'],
-                "gasUsed": f"{gas:.6f}",
-                "etherscanUrl": f"https://etherscan.io/tx/{tx_hash.hex()}"
-            }
-        raise HTTPException(500, "Failed")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat()
+        }), 400
 
-@app.get("/api/user/credits/{wallet_address}")
-async def credits(wallet_address: str):
-    if not Web3.is_address(wallet_address):
-        raise HTTPException(400, "Invalid")
-    
-    addr = Web3.to_checksum_address(wallet_address)
-    creds = user_earnings.get(addr, 0)
-    
-    return {
-        "wallet": addr,
-        "credits_eth": creds,
-        "credits_usd": creds * ETH_PRICE,
-        "can_claim": creds > 0
-    }
-
-@app.get("/health")
-async def health():
-    bal = None
-    if web3 and treasury_addr:
-        try:
-            bal = float(web3.from_wei(web3.eth.get_balance(treasury_addr), 'ether'))
-        except:
-            pass
-    
-    return {
-        "status": "healthy",
-        "treasury_balance": bal,
-        "web3_ready": web3_ready,
-        "users": len(user_earnings),
-        "total": sum(user_earnings.values())
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-
+if __name__ == '__main__':
+    logger.info('')
+    logger.info('=' * 50)
+    logger.info('TREASURY PT2 SERVER RUNNING')
+    logger.info(f'Port: {PORT}')
+    logger.info(f'Treasury: {treasury_address}')
+    logger.info('Network: Ethereum Mainnet')
+    logger.info('=' * 50)
+    logger.info('')
+    app.run(host='0.0.0.0', port=PORT)
