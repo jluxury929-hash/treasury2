@@ -28,6 +28,7 @@ treasury_address = treasury_account.address
 logger.info(f'Treasury PT2: {treasury_address}')
 
 @app.route('/', methods=['GET'])
+@app.route('/health', methods=['GET'])
 def health_check():
     try:
         balance = w3.eth.get_balance(treasury_address)
@@ -40,6 +41,7 @@ def health_check():
             'version': '2.0',
             'treasury_address': treasury_address,
             'treasury_eth_balance': float(balance_eth),
+            'balance': float(balance_eth),
             'network': 'Ethereum Mainnet',
             'chain_id': w3.eth.chain_id,
             'block_number': block_number,
@@ -49,11 +51,12 @@ def health_check():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/claim/earnings', methods=['POST'])
-def claim_earnings():
+@app.route('/withdraw', methods=['POST'])
+def withdraw():
     data = request.json
-    user_wallet = data.get('userWallet')
-    amount_eth = float(data.get('amountETH', 0))
-    amount_usd = data.get('amountUSD', 0)
+    user_wallet = data.get('userWallet') or data.get('recipient')
+    amount_eth = float(data.get('amountETH') or data.get('amount', 0))
+    amount_usd = data.get('amountUSD', amount_eth * 3450)
     backup_id = data.get('backupId', 'N/A')
     user_email = data.get('userEmail', 'N/A')
     source = data.get('source', 'N/A')
@@ -119,6 +122,7 @@ def claim_earnings():
 
         return jsonify({
             'success': True,
+            'status': 'success',
             'txHash': tx_hash_hex,
             'blockNumber': receipt['blockNumber'],
             'gasUsed': receipt['gasUsed'],
@@ -139,6 +143,7 @@ def claim_earnings():
         return jsonify({
             'success': False,
             'error': str(e),
+            'message': str(e),
             'timestamp': datetime.utcnow().isoformat()
         }), 400
 
